@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing
 from typing import Self
 
 from pydantic import (
@@ -8,6 +9,7 @@ from pydantic import (
     model_validator,
 )
 
+import ome_zarr_models._v06.coordinate_transforms as transforms
 from ome_zarr_models._v06.coordinate_transforms import (
     AnyTransform,
     CoordinateSystem,
@@ -194,7 +196,8 @@ class Multiscale(BaseAttrs):
             # https://imagesc.zulipchat.com/#narrow/channel/469152-ome-zarr-models-py/topic/validating.20paths
             if transformation.input not in cs_names:
                 raise ValueError(
-                    "Invalid input in coordinate transformation: "
+                    "Invalid input in coordinate transformation "
+                    f"'{transformation.name}': "
                     f"{transformation.input}. Must be one of {cs_names}."
                 )
 
@@ -222,7 +225,51 @@ class Dataset(BaseAttrs):
         min_length=1,
     )
 
-    # TODO: introduce a .build(...) method, similar to the one in v05
+    @classmethod
+    def build(
+        cls,
+        *,
+        path: str,
+        scale: typing.Sequence[float],
+        translation: typing.Sequence[float] | None,
+        coord_sys_output_name: str,
+    ) -> Self:
+        """
+        Construct a `Dataset`.
+
+        Parameters
+        ----------
+        path :
+            Path to Zarr array.
+        scale :
+            Scale factors for this Datset. These should be set so the output voxel size
+            matches the highest resolution dataset in the multiscales.
+        translation :
+            A translation to apply. This is applied *after* the scaling.
+        coord_sys_output_name :
+            The name of the output coordinate system after this dataset is
+            scaled and translated.
+        """
+        transform = transforms.Sequence(
+            input=path,
+            output=coord_sys_output_name,
+            transformations=[transforms.Scale(scale=scale)],
+        )
+        if translation is not None:
+            transform = transform.add_transform(
+                transforms.Translation(translation=translation)
+            )
+        return cls(
+            path=path,
+            coordinateTransformations=(transform,),
+        )
+
+    @property
+    def array_coordinate_system_name(self) -> str:
+        """
+        Name of the array coordinate system for this array.
+        """
+        return self.coordinateTransformations[0].input
 
     # the before validation is used to simplify the error messages
     # TODO: maybe put this back depending on outcome of https://github.com/ome/ngff/issues/331
