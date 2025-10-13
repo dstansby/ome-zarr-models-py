@@ -1,6 +1,8 @@
+from collections import defaultdict
 import copy
 from abc import ABC, abstractmethod
-from typing import Literal, Self, TypeVar
+from typing import Annotated, Any, ClassVar, Literal, Self, TypeVar, Union
+import warnings
 
 from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 
@@ -29,6 +31,19 @@ class Point(BaseModel):
     @property
     def axes(self) -> tuple[str, ...]:
         return tuple(self.coordinates.keys())
+
+    def transform_to(self, coordinate_system: str) -> "Point":
+        """
+        Transform this point to another coordinate system.
+
+        Uses a global coordinate system transformation graph.
+        """
+        point = self
+        for transform in TRANSFORM_REGISTRY.find_path(
+            self.coordinate_system, coordinate_system
+        ):
+            point = transform.transform_point(point)
+        return point
 
 
 class Axis(BaseAttrs):
@@ -92,6 +107,10 @@ class Transform(BaseAttrs, ABC):
     input: str | None = None
     output: str | None = None
     name: str | None = None
+
+    def model_post_init(self, context: Any) -> None:
+        if self.input is not None and self.output is not None:
+            TRANSFORM_REGISTRY.add_transform(self)
 
     @model_validator(mode="after")
     def _ensure_consistent_input_output(self: Self) -> Self:
@@ -414,6 +433,14 @@ class Sequence(Transform):
             transformations=tuple(t.get_inverse() for t in self.transformations[::-1]),
         )
 
+    def add_transform(self, new_transform: Transform) -> "Sequence":
+        """
+        Add a new transform to the end of this sequence.
+        """
+        return self.model_copy(
+            update={"transformations": (*self.transformations, new_transform)}
+        )
+
 
 class Displacements(Transform):
     """Displacement field transform."""
@@ -500,7 +527,7 @@ class ByDimension(Transform):
         )
 
 
-AnyTransform = (
+AnyTransform = Annotated[
     Identity
     | MapAxis
     | Translation
@@ -512,5 +539,59 @@ AnyTransform = (
     | Coordinates
     | Inverse
     | Bijection
-    | ByDimension
-)
+    | ByDimension,
+    Field(discriminator="type"),
+]
+
+
+class _TransformRegistry:
+    # Mapping from coordinate systems to set of coordinate systems
+    # that it can be directly transformed to
+    _graph: dict[str, set[str]]
+    _transforms: dict[tuple[str, str], Transform]
+
+    def __init__(self) -> None:
+        self._graph = defaultdict(set)
+        self._transforms = {}
+
+    def add_transform(self, transform: Transform) -> None:
+        """Add connection between node1 and node2"""
+        if transform.input is None or transform.output is None:
+            raise ValueError("Transform input and output must both not be None")
+        if transform.output in self._graph[transform.input]:
+            warnings.warn(
+                f"Transform between {transform.input} and {transform.output} "
+                "was already in the transformation graph. "
+                "Overwriting with new transform.",
+                stacklevel=2,
+            )
+        self._graph[transform.input].add(transform.output)
+        self._transforms[(transform.input, transform.output)] = transform
+
+    def find_path(self, system_in: str, system_out: str) -> list[AnyTransform]:
+        path = self._find_path(system_in, system_out, [])
+        if path is None:
+            raise RuntimeError(f"No path between {system_in} and {system_out}")
+        transforms = []
+        for i in range(len(path) - 1):
+            transforms.append(self._transforms[(path[i], path[i + 1])])
+        return transforms
+
+    def _find_path(
+        self, system_in: str, system_out: str, path: list[str]
+    ) -> list[str] | None:
+        """Find any path between node1 and node2 (may not be shortest)"""
+        path = [*path, system_in]
+        if system_in == system_out:
+            return path
+        if system_in not in self._graph:
+            return None
+        for node in self._graph[system_in]:
+            if node not in path:
+                new_path = self._find_path(node, system_out, path)
+                if new_path:
+                    return new_path
+        return None
+
+
+TRANSFORM_REGISTRY = _TransformRegistry()
