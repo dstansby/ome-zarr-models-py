@@ -3,7 +3,7 @@
 ## 1.7
 
 - Require `pydantic` < 2.13, due to new issues in model construction that are not yet resolved.
-- Correctly allow `colors` metadata to be not set or `null` in side 0.4 and 0.5 image-label metadata.
+- Correctly allow `colors` metadata to be not set or `null` inside image-label metadata.
 
 ## 1.6
 
