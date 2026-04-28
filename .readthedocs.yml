@@ -7,7 +7,6 @@ build:
   apt_packages:
     - graphviz
 
-
 python:
   install:
     - method: pip
